@@ -1293,7 +1293,7 @@ struct Gcx
     debug(INVARIANT) bool initialized;
     uint disabled; // turn off collections if >0
 
-    import gc.pooltable;
+    import gc.impl.conservative.pooltable;
     @property size_t npools() pure const nothrow { return pooltable.length; }
     PoolTable!Pool pooltable;
 
