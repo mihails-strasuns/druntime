@@ -158,7 +158,7 @@ nothrow:
     @property const(void)* minAddr() pure const { return _minAddr; }
     @property const(void)* maxAddr() pure const { return _maxAddr; }
 
-package:
+private:
     Pool** pools;
     size_t npools;
     void* _minAddr, _maxAddr;

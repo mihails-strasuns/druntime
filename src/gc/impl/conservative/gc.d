@@ -1976,8 +1976,7 @@ struct Gcx
         size_t pcache = 0;
 
         // let dmd allocate a register for this.pools
-        auto pools = pooltable.pools;
-        const highpool = pooltable.npools - 1;
+        const highpool = pooltable.length - 1;
         const minAddr = pooltable.minAddr;
         size_t memSize = pooltable.maxAddr - minAddr;
 
@@ -1999,7 +1998,7 @@ struct Gcx
                 while (true)
                 {
                     size_t mid = (low + high) >> 1;
-                    pool = pools[mid];
+                    pool = pooltable[mid];
                     if (p < pool.baseAddr)
                         high = mid - 1;
                     else if (p >= pool.topAddr)
