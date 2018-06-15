@@ -295,6 +295,7 @@ SRCS=\
 	src\gc\gcinterface.d \
 	src\gc\os.d \
 	src\gc\proxy.d \
+	src\gc\gcassert.d \
 	src\gc\impl\conservative\gc.d \
 	src\gc\impl\conservative\pooltable.d \
 	src\gc\impl\manual\gc.d \

@@ -12,6 +12,7 @@ static import cstdlib=core.stdc.stdlib;
 struct PoolTable(Pool)
 {
     import core.stdc.string : memmove;
+    import gc.gcassert;
 
 nothrow:
     void Dtor()
@@ -54,14 +55,14 @@ nothrow:
     }
 
     ref inout(Pool*) opIndex(size_t idx) inout pure
-    in { assert(idx < length); }
+    in { gcassert(idx < length); }
     do
     {
         return pools[idx];
     }
 
     inout(Pool*)[] opSlice(size_t a, size_t b) inout pure
-    in { assert(a <= length && b <= length); }
+    in { gcassert(a <= length && b <= length); }
     do
     {
         return pools[a .. b];
@@ -78,7 +79,7 @@ nothrow:
     {
         if (p >= minAddr && p < maxAddr)
         {
-            assert(npools);
+            gcassert(npools != 0);
 
             // let dmd allocate a register for this.pools
             auto pools = this.pools;
@@ -149,10 +150,10 @@ nothrow:
         if (!npools) return;
 
         foreach (i, pool; pools[0 .. npools - 1])
-            assert(pool.baseAddr < pools[i + 1].baseAddr);
+            gcassert(pool.baseAddr < pools[i + 1].baseAddr);
 
-        assert(_minAddr == pools[0].baseAddr);
-        assert(_maxAddr == pools[npools - 1].topAddr);
+        gcassert(_minAddr == pools[0].baseAddr);
+        gcassert(_maxAddr == pools[npools - 1].topAddr);
     }
 
     @property const(void)* minAddr() pure const { return _minAddr; }

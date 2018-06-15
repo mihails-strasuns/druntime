@@ -42,6 +42,7 @@ import gc.bits;
 import gc.os;
 import gc.config;
 import gc.gcinterface;
+import gc.gcassert;
 
 import rt.util.container.treap;
 
@@ -187,11 +188,11 @@ debug (LOGGING)
 
         void reserve(size_t nentries) nothrow
         {
-            assert(dim <= allocdim);
+            gcassert(dim <= allocdim);
             if (allocdim - dim < nentries)
             {
                 allocdim = (dim + nentries) * 2;
-                assert(dim + nentries <= allocdim);
+                gcassert(dim + nentries <= allocdim);
                 if (!data)
                 {
                     data = cast(Log*)cstdlib.malloc(allocdim * Log.sizeof);
@@ -239,7 +240,7 @@ debug (LOGGING)
         void copy(LogArray *from) nothrow
         {
             reserve(from.dim - dim);
-            assert(from.dim <= allocdim);
+            gcassert(from.dim <= allocdim);
             memcpy(data, from.data, from.dim * Log.sizeof);
             dim = from.dim;
         }
@@ -283,7 +284,7 @@ class ConservativeGC : GC
             onOutOfMemoryErrorNoGC();
 
         auto init = typeid(ConservativeGC).initializer();
-        assert(init.length == __traits(classInstanceSize, ConservativeGC));
+        gcassert(init.length == __traits(classInstanceSize, ConservativeGC));
         auto instance = cast(ConservativeGC) memcpy(p, init.ptr, init.length);
         instance.__ctor();
 
@@ -339,7 +340,7 @@ class ConservativeGC : GC
     {
         static void go(Gcx* gcx) nothrow
         {
-            assert(gcx.disabled > 0);
+            gcassert(gcx.disabled > 0);
             gcx.disabled--;
         }
         runLocked!(go, otherTime, numOthers)(gcx);
@@ -508,10 +509,10 @@ class ConservativeGC : GC
     //
     private void *mallocNoSync(size_t size, uint bits, ref size_t alloc_size, const TypeInfo ti = null) nothrow
     {
-        assert(size != 0);
+        gcassert(size != 0);
 
         //debug(PRINTF) printf("GC::malloc(size = %d, gcx = %p)\n", size, gcx);
-        assert(gcx);
+        gcassert(gcx !is null);
         //debug(PRINTF) printf("gcx.self = %x, pthread_self() = %x\n", gcx.self, pthread_self());
 
         auto p = gcx.alloc(size + SENTINEL_EXTRA, alloc_size, bits);
@@ -742,7 +743,7 @@ class ConservativeGC : GC
     private size_t extendNoSync(void* p, size_t minsize, size_t maxsize, const TypeInfo ti = null) nothrow
     in
     {
-        assert(minsize <= maxsize);
+        gcassert(minsize <= maxsize);
     }
     do
     {
@@ -808,8 +809,8 @@ class ConservativeGC : GC
     //
     private size_t reserveNoSync(size_t size) nothrow
     {
-        assert(size != 0);
-        assert(gcx);
+        gcassert(size != 0);
+        gcassert(gcx !is null);
 
         return gcx.reserve(size);
     }
@@ -832,7 +833,7 @@ class ConservativeGC : GC
     private void freeNoSync(void *p) nothrow @nogc
     {
         debug(PRINTF) printf("Freeing %p\n", cast(size_t) p);
-        assert (p);
+        gcassert (p !is null);
 
         Pool*  pool;
         size_t pagenum;
@@ -866,7 +867,7 @@ class ConservativeGC : GC
 
         if (pool.isLargeObject)              // if large alloc
         {
-            assert(bin == B_PAGE);
+            gcassert(bin == B_PAGE);
             auto lpool = cast(LargeObjectPool*) pool;
 
             // Free pages
@@ -933,7 +934,7 @@ class ConservativeGC : GC
     //
     private size_t sizeOfNoSync(void *p) nothrow @nogc
     {
-        assert (p);
+        gcassert (p !is null);
 
         debug (SENTINEL)
         {
@@ -979,7 +980,7 @@ class ConservativeGC : GC
     //
     BlkInfo queryNoSync(void *p) nothrow
     {
-        assert(p);
+        gcassert(p !is null);
 
         BlkInfo info = gcx.getInfo(p);
         debug(SENTINEL)
@@ -1016,7 +1017,7 @@ class ConservativeGC : GC
     //
     private void checkNoSync(void *p) nothrow
     {
-        assert(p);
+        gcassert(p !is null);
 
         sentinel_Invariant(p);
         debug (PTRCHECK)
@@ -1028,12 +1029,12 @@ class ConservativeGC : GC
 
             p = sentinel_sub(p);
             pool = gcx.findPool(p);
-            assert(pool);
+            gcassert(pool);
             pagenum = pool.pagenumOf(p);
             bin = cast(Bins)pool.pagetable[pagenum];
-            assert(bin <= B_PAGE);
+            gcassert(bin <= B_PAGE);
             size = binsize[bin];
-            assert((cast(size_t)p & (size - 1)) == 0);
+            gcassert((cast(size_t)p & (size - 1)) == 0);
 
             debug (PTRCHECK2)
             {
@@ -1044,7 +1045,7 @@ class ConservativeGC : GC
 
                     for (list = gcx.bucket[bin]; list; list = list.next)
                     {
-                        assert(cast(void*)list != p);
+                        gcassert(cast(void*)list != p);
                     }
                 }
             }
@@ -1275,7 +1276,7 @@ static assert(PAGESIZE % (GCBits.BITS_PER_WORD * 16) == 0);
 
 private void set(ref PageBits bits, size_t i) @nogc pure nothrow
 {
-    assert(i < PageBits.sizeof * 8);
+    gcassert(i < PageBits.sizeof * 8);
     bts(bits.ptr, i);
 }
 
@@ -1374,7 +1375,7 @@ struct Gcx
             pool.Dtor();
             cstdlib.free(pool);
         }
-        assert(!mappedPages);
+        gcassert(!mappedPages);
         pooltable.Dtor();
 
         roots.removeAll();
@@ -1396,9 +1397,9 @@ struct Gcx
             rangesLock.lock();
             foreach (range; ranges)
             {
-                assert(range.pbot);
-                assert(range.ptop);
-                assert(range.pbot <= range.ptop);
+                gcassert(range.pbot);
+                gcassert(range.ptop);
+                gcassert(range.pbot <= range.ptop);
             }
             rangesLock.unlock();
 
@@ -1479,7 +1480,7 @@ struct Gcx
         // This is a fatal error, but ignore it.
         // The problem is that we can get a Close() call on a thread
         // other than the one the range was allocated on.
-        //assert(zero);
+        //gcassert(zero);
     }
 
     /**
@@ -1557,7 +1558,7 @@ struct Gcx
             else
             {
                 // we are in a B_FREE page
-                assert(bin == B_FREE);
+                gcassert(bin == B_FREE);
                 return null;
             }
         }
@@ -1716,7 +1717,7 @@ struct Gcx
                 // out of luck or memory
                 onOutOfMemoryErrorNoGC();
         }
-        assert(p !is null);
+        gcassert(p !is null);
 
         // Return next item from free list
         bucket[bin] = (cast(List*)p).next;
@@ -1762,7 +1763,7 @@ struct Gcx
             pool = cast(LargeObjectPool*) newPool(npages, true);
             if (!pool) return false;
             pn = pool.allocPages(npages);
-            assert(pn != OPFAIL);
+            gcassert(pn != OPFAIL);
             return true;
         }
 
@@ -1788,7 +1789,7 @@ struct Gcx
                 // out of luck or memory
                 return null;
         }
-        assert(pool);
+        gcassert(pool !is null);
 
         debug(PRINTF) printFreeInfo(&pool.base);
         pool.pagetable[pn] = B_PAGE;
@@ -1916,14 +1917,14 @@ struct Gcx
         }
 
         ScanRange pop()
-        in { assert(!empty); }
+        in { gcassert(!empty); }
         do
         {
             return _p[--_length];
         }
 
         ref inout(ScanRange) opIndex(size_t idx) inout
-        in { assert(idx < _length); }
+        in { gcassert(idx < _length); }
         do
         {
             return _p[idx];
@@ -2070,7 +2071,7 @@ struct Gcx
                 else
                 {
                     // Don't mark bits in B_FREE pages
-                    assert(bin == B_FREE);
+                    gcassert(bin == B_FREE);
                 }
             }
         LnextPtr:
@@ -2144,7 +2145,7 @@ struct Gcx
             for (List *list = bucket[n]; list; list = list.next)
             {
                 pool = list.pool;
-                assert(pool);
+                gcassert(pool !is null);
                 pool.freebits.set(cast(size_t)(cast(void*)list - pool.baseAddr) / 16);
             }
         }
@@ -2302,7 +2303,7 @@ struct Gcx
             }
         }
 
-        assert(freedLargePages <= usedLargePages);
+        gcassert(freedLargePages <= usedLargePages);
         usedLargePages -= freedLargePages;
         debug(COLLECT_PRINTF) printf("\tfree'd %u bytes, %u pages from %u pools\n", freed, freedLargePages, npools);
         return freedLargePages;
@@ -2372,7 +2373,7 @@ struct Gcx
         foreach (ref next; tail)
             *next = null;
 
-        assert(freedSmallPages <= usedSmallPages);
+        gcassert(freedSmallPages <= usedSmallPages);
         usedSmallPages -= freedSmallPages;
         debug(COLLECT_PRINTF) printf("\trecovered pages = %d\n", freedSmallPages);
         return freedSmallPages;
@@ -2486,7 +2487,7 @@ struct Gcx
             }
             else // bins == B_FREE
             {
-                assert(bins == B_FREE);
+                gcassert(bins == B_FREE);
                 return IsMarked.no;
             }
             return pool.mark.test(biti) ? IsMarked.yes : IsMarked.no;
@@ -2590,7 +2591,7 @@ struct Gcx
                 debug(PRINTF) printf("parent'ing unallocated memory %p, parent = %p\n", p, parent);
                 Pool *pool;
                 pool = findPool(p);
-                assert(pool);
+                gcassert(pool);
                 size_t offset = cast(size_t)(p - pool.baseAddr);
                 size_t biti;
                 size_t pn = offset / PAGESIZE;
@@ -2664,11 +2665,11 @@ struct Pool
 
         //debug(PRINTF) printf("Pool::Pool(%u)\n", npages);
         poolsize = npages * PAGESIZE;
-        assert(poolsize >= POOLSIZE);
+        gcassert(poolsize >= POOLSIZE);
         baseAddr = cast(byte *)os_mem_map(poolsize);
 
         // Some of the code depends on page alignment of memory pools
-        assert((cast(size_t)baseAddr & (PAGESIZE - 1)) == 0);
+        gcassert((cast(size_t)baseAddr & (PAGESIZE - 1)) == 0);
 
         if (!baseAddr)
         {
@@ -2678,7 +2679,7 @@ struct Pool
             npages = 0;
             poolsize = 0;
         }
-        //assert(baseAddr);
+        //gcassert(baseAddr);
         topAddr = baseAddr + poolsize;
         auto nbits = cast(size_t)poolsize >> shiftBy;
 
@@ -2723,7 +2724,7 @@ struct Pool
             if (npages)
             {
                 result = os_mem_unmap(baseAddr, npages * PAGESIZE);
-                assert(result == 0);
+                gcassert(result == 0);
                 npages = 0;
             }
 
@@ -2847,8 +2848,8 @@ struct Pool
 
     void freePageBits(size_t pagenum, in ref PageBits toFree) nothrow
     {
-        assert(!isLargeObject);
-        assert(!nointerior.nbits); // only for large objects
+        gcassert(!isLargeObject);
+        gcassert(!nointerior.nbits); // only for large objects
 
         import core.internal.traits : staticIota;
         immutable beg = pagenum * (PAGESIZE / 16 / GCBits.BITS_PER_WORD);
@@ -2884,8 +2885,8 @@ struct Pool
     size_t pagenumOf(void *p) const nothrow @nogc
     in
     {
-        assert(p >= baseAddr);
-        assert(p < topAddr);
+        gcassert(p >= baseAddr);
+        gcassert(p < topAddr);
     }
     do
     {
@@ -2932,7 +2933,7 @@ struct Pool
         {
             //if (baseAddr + npages * PAGESIZE != topAddr)
                 //printf("baseAddr = %p, npages = %d, topAddr = %p\n", baseAddr, npages, topAddr);
-            assert(baseAddr + npages * PAGESIZE == topAddr);
+            gcassert(baseAddr + npages * PAGESIZE == topAddr);
         }
 
         if(pagetable !is null)
@@ -2940,7 +2941,7 @@ struct Pool
             for (size_t i = 0; i < npages; i++)
             {
                 Bins bin = cast(Bins)pagetable[i];
-                assert(bin < B_MAX);
+                gcassert(bin < B_MAX);
             }
         }
     }
@@ -2953,7 +2954,7 @@ struct LargeObjectPool
 
     void updateOffsets(size_t fromWhere) nothrow
     {
-        assert(pagetable[fromWhere] == B_PAGE);
+        gcassert(pagetable[fromWhere] == B_PAGE);
         size_t pn = fromWhere + 1;
         for(uint offset = 1; pn < npages; pn++, offset++)
         {
@@ -2986,7 +2987,7 @@ struct LargeObjectPool
 
         for (size_t i = searchStart; i < npages; )
         {
-            assert(pagetable[i] == B_FREE);
+            gcassert(pagetable[i] == B_FREE);
             size_t p = 1;
             while (p < n && i + p < npages && pagetable[i + p] == B_FREE)
                 p++;
@@ -3037,14 +3038,14 @@ struct LargeObjectPool
     size_t getSize(void *p) const nothrow @nogc
     in
     {
-        assert(p >= baseAddr);
-        assert(p < topAddr);
+        gcassert(p >= baseAddr);
+        gcassert(p < topAddr);
     }
     do
     {
         size_t pagenum = pagenumOf(p);
         Bins bin = cast(Bins)pagetable[pagenum];
-        assert(bin == B_PAGE);
+        gcassert(bin == B_PAGE);
         return bPageOffsets[pagenum] * PAGESIZE;
     }
 
@@ -3122,14 +3123,14 @@ struct SmallObjectPool
     size_t getSize(void *p) const nothrow @nogc
     in
     {
-        assert(p >= baseAddr);
-        assert(p < topAddr);
+        gcassert(p >= baseAddr);
+        gcassert(p < topAddr);
     }
     do
     {
         size_t pagenum = pagenumOf(p);
         Bins bin = cast(Bins)pagetable[pagenum];
-        assert(bin < B_PAGE);
+        gcassert(bin < B_PAGE);
         return binsize[bin];
     }
 
@@ -3319,8 +3320,8 @@ debug (SENTINEL)
     {
         debug
         {
-            assert(*sentinel_pre(p) == SENTINEL_PRE);
-            assert(*sentinel_post(p) == SENTINEL_POST);
+            gcassert(*sentinel_pre(p) == SENTINEL_PRE);
+            gcassert(*sentinel_post(p) == SENTINEL_POST);
         }
         else if(*sentinel_pre(p) != SENTINEL_PRE || *sentinel_post(p) != SENTINEL_POST)
             onInvalidMemoryOperationError(); // also trigger in release build
