@@ -5,7 +5,6 @@ import gc.gcinterface : BlkInfo, BlkAttr;
 import gc.gcassert;
 import gc.os;
 import gc.impl.conservative.debugging;
-import gc.impl.conservative.freelist;
 import core.bitop;
 import core.stdc.stdlib : free, malloc;
 import core.stdc.string : memset;
@@ -21,6 +20,24 @@ enum
     PAGESIZE =    4096,
     POOLSIZE =   (4096*256),
 }
+
+enum
+{
+    B_16,
+    B_32,
+    B_64,
+    B_128,
+    B_256,
+    B_512,
+    B_1024,
+    B_2048,
+    B_PAGE,             // start of large alloc
+    B_PAGEPLUS,         // continuation of large alloc
+    B_FREE,             // free page
+    B_MAX
+}
+
+alias ubyte Bins;
 
 alias PageBits = GCBits.wordtype[PAGESIZE / 16 / GCBits.BITS_PER_WORD];
 static assert(PAGESIZE % (GCBits.BITS_PER_WORD * 16) == 0);
@@ -310,23 +327,6 @@ struct Pool
         return npages == freepages;
     }
 
-    size_t slGetSize(void* p) nothrow @nogc
-    {
-        if (isLargeObject)
-            return (cast(LargeObjectPool*)&this).getSize(p);
-        else
-            return (cast(SmallObjectPool*)&this).getSize(p);
-    }
-
-    BlkInfo slGetInfo(void* p) nothrow
-    {
-        if (isLargeObject)
-            return (cast(LargeObjectPool*)&this).getInfo(p);
-        else
-            return (cast(SmallObjectPool*)&this).getInfo(p);
-    }
-
-
     void Invariant() const {}
 
     debug(INVARIANT)
@@ -520,128 +520,5 @@ struct LargeObjectPool
             debug (MEMSTOMP) memset(baseAddr + pn * PAGESIZE, 0xF3, n * PAGESIZE);
             freePages(pn, n);
         }
-    }
-}
-
-
-struct SmallObjectPool
-{
-    Pool base;
-    alias base this;
-
-    /**
-    * Get size of pointer p in pool.
-    */
-    size_t getSize(void *p) const nothrow @nogc
-    in
-    {
-        gcassert(p >= baseAddr);
-        gcassert(p < topAddr);
-    }
-    do
-    {
-        size_t pagenum = pagenumOf(p);
-        Bins bin = cast(Bins)pagetable[pagenum];
-        gcassert(bin < B_PAGE);
-        return binsize[bin];
-    }
-
-    BlkInfo getInfo(void* p) nothrow
-    {
-        BlkInfo info;
-        size_t offset = cast(size_t)(p - baseAddr);
-        size_t pn = offset / PAGESIZE;
-        Bins   bin = cast(Bins)pagetable[pn];
-
-        if (bin >= B_PAGE)
-            return info;
-
-        info.base = cast(void*)((cast(size_t)p) & notbinsize[bin]);
-        info.size = binsize[bin];
-        offset = info.base - baseAddr;
-        info.attr = getBits(cast(size_t)(offset >> ShiftBy.Small));
-
-        return info;
-    }
-
-    void runFinalizers(in void[] segment) nothrow
-    {
-        foreach (pn; 0 .. npages)
-        {
-            Bins bin = cast(Bins)pagetable[pn];
-            if (bin >= B_PAGE)
-                continue;
-
-            immutable size = binsize[bin];
-            auto p = baseAddr + pn * PAGESIZE;
-            const ptop = p + PAGESIZE;
-            immutable base = pn * (PAGESIZE/16);
-            immutable bitstride = size / 16;
-
-            bool freeBits;
-            PageBits toFree;
-
-            for (size_t i; p < ptop; p += size, i += bitstride)
-            {
-                immutable biti = base + i;
-
-                if (!finals.test(biti))
-                    continue;
-
-                auto q = sentinel_add(p);
-                uint attr = getBits(biti);
-
-                if(!rt_hasFinalizerInSegment(q, size, attr, segment))
-                    continue;
-
-                rt_finalizeFromGC(q, size, attr);
-
-                freeBits = true;
-                toFree.set(i);
-
-                debug(COLLECT_PRINTF) printf("\tcollecting %p\n", p);
-                //log_free(sentinel_add(p));
-
-                debug (MEMSTOMP) memset(p, 0xF3, size);
-            }
-
-            if (freeBits)
-                freePageBits(pn, toFree);
-        }
-    }
-
-    /**
-    * Allocate a page of bin's.
-    * Returns:
-    *           head of a single linked list of new entries
-    */
-    List!Pool* allocPage(Bins bin) nothrow
-    {
-        size_t pn;
-        for (pn = searchStart; pn < npages; pn++)
-            if (pagetable[pn] == B_FREE)
-                goto L1;
-
-        return null;
-
-    L1:
-        searchStart = pn + 1;
-        pagetable[pn] = cast(ubyte)bin;
-        freepages--;
-
-        // Convert page to free list
-        size_t size = binsize[bin];
-        void* p = baseAddr + pn * PAGESIZE;
-        void* ptop = p + PAGESIZE - size;
-        auto first = cast(List!Pool*) p;
-
-        for (; p < ptop; p += size)
-        {
-            (cast(List!Pool *)p).next = cast(List!Pool *)(p + size);
-            (cast(List!Pool *)p).pool = &base;
-        }
-        (cast(List!Pool *)p).next = null;
-        (cast(List!Pool *)p).pool = &base;
-        return first;
     }
 }

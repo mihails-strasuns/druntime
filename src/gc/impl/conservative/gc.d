@@ -67,8 +67,6 @@ else                   import core.stdc.stdio : sprintf, printf; // needed to ou
 import core.time;
 alias currTime = MonoTime.currTime;
 
-alias List = gc.impl.conservative.freelist.List!Pool;
-
 debug(PRINTF_TO_FILE)
 {
     private __gshared MonoTime gcStartTick;
@@ -784,14 +782,14 @@ class ConservativeGC : GC
             lpool.freePages(pagenum, npages);
         }
         else
-        {   // Add to free list
-            List *list = cast(List*)p;
-
+        {
             debug (MEMSTOMP) memset(p, 0xF2, binsize[bin]);
 
-            list.next = gcx.bucket[bin];
-            list.pool = pool;
-            gcx.bucket[bin] = list;
+            // Add to free list
+            FreeList *item = cast(FreeList*)p;
+            item.host = pool;
+            gcx.bucket[bin].add(item);
+            gcassert(gcx.bucket[bin] !is null);
         }
 
         gcx.log_free(sentinel_add(p));
@@ -949,7 +947,7 @@ class ConservativeGC : GC
                 if (bin < B_PAGE)
                 {
                     // Check that p is not on a free list
-                    List *list;
+                    FreeList *list;
 
                     for (list = gcx.bucket[bin]; list; list = list.next)
                     {
@@ -1130,7 +1128,7 @@ class ConservativeGC : GC
         foreach (n; 0 .. B_PAGE)
         {
             immutable sz = binsize[n];
-            for (List *list = gcx.bucket[n]; list; list = list.next)
+            foreach (_; gcx.bucket[n].range())
                 freeListSize += sz;
         }
 
@@ -1157,7 +1155,7 @@ struct Gcx
     import gc.impl.conservative.pooltable;
     @property size_t npools() pure const nothrow { return pooltable.length; }
     PoolTable!Pool pooltable;
-    List*[B_PAGE] bucket; // free list for each small size
+    FreeList*[B_PAGE] bucket; // free list for each small size
 
 
     // run a collection when reaching those thresholds (number of used pages)
@@ -1265,7 +1263,7 @@ struct Gcx
 
             for (size_t i = 0; i < B_PAGE; i++)
             {
-                for (auto list = cast(List*)bucket[i]; list; list = list.next)
+                for (auto list = cast(FreeList*)bucket[i]; list; list = list.next)
                 {
                 }
             }
@@ -1580,8 +1578,9 @@ struct Gcx
         gcassert(p !is null);
 
         // Return next item from free list
-        bucket[bin] = (cast(List*)p).next;
-        auto pool = (cast(List*)p).pool;
+        auto item = bucket[bin].take();
+        gcassert(item is p);
+        auto pool = item.host;
         if (bits)
             pool.setBits((p - pool.baseAddr) >> pool.shiftBy, bits);
         //debug(PRINTF) printf("\tmalloc => %p\n", p);
@@ -1734,7 +1733,7 @@ struct Gcx
     * Returns:
     *           head of a single linked list of new entries
     */
-    List* allocPage(Bins bin) nothrow
+    FreeList* allocPage(Bins bin) nothrow
     {
         //debug(PRINTF) printf("Gcx::allocPage(bin = %d)\n", bin);
         for (size_t n = 0; n < npools; n++)
@@ -1742,7 +1741,7 @@ struct Gcx
             Pool* pool = pooltable[n];
             if(pool.isLargeObject)
                 continue;
-            if (List* p = (cast(SmallObjectPool*)pool).allocPage(bin))
+            if (FreeList* p = (cast(SmallObjectPool*)pool).allocPage(bin))
             {
                 ++usedSmallPages;
                 return p;
@@ -2002,11 +2001,11 @@ struct Gcx
         // Mark each free entry, so it doesn't get scanned
         for (n = 0; n < B_PAGE; n++)
         {
-            for (List *list = bucket[n]; list; list = list.next)
+            foreach (item; bucket[n].range())
             {
-                pool = list.pool;
+                pool = item.host;
                 gcassert(pool !is null);
-                pool.freebits.set(cast(size_t)(cast(void*)list - pool.baseAddr) / 16);
+                pool.freebits.set(cast(size_t)(cast(void*)item - pool.baseAddr) / 16);
             }
         }
 
@@ -2173,7 +2172,7 @@ struct Gcx
     size_t recover() nothrow
     {
         // init tail list
-        List**[B_PAGE] tail = void;
+        FreeList**[B_PAGE] tail = void;
         foreach (i, ref next; tail)
             next = &bucket[i];
 
@@ -2221,8 +2220,8 @@ struct Gcx
                         biti = bitbase + u / 16;
                         if (!pool.freebits.test(biti))
                             continue;
-                        auto elem = cast(List *)(p + u);
-                        elem.pool = pool;
+                        auto elem = cast(FreeList *)(p + u);
+                        elem.host = pool;
                         *tail[bin] = elem;
                         tail[bin] = &elem.next;
                     }
@@ -2475,6 +2474,23 @@ struct Gcx
         void log_collect() nothrow { }
         void log_parent(void *p, void *parent) nothrow { }
     }
+}
+
+
+size_t slGetSize(Pool* pool, void* p) nothrow @nogc
+{
+    if (pool.isLargeObject)
+        return (cast(LargeObjectPool*) pool).getSize(p);
+    else
+        return (cast(SmallObjectPool*) pool).getSize(p);
+}
+
+BlkInfo slGetInfo(Pool* pool, void* p) nothrow
+{
+    if (pool.isLargeObject)
+        return (cast(LargeObjectPool*) pool).getInfo(p);
+    else
+        return (cast(SmallObjectPool*) pool).getInfo(p);
 }
 
 unittest // bugzilla 14467
