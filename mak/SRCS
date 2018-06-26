@@ -301,6 +301,7 @@ SRCS=\
 	src\gc\impl\conservative\pool.d \
 	src\gc\impl\conservative\freelist.d \
 	src\gc\impl\conservative\debugging.d \
+	src\gc\impl\conservative\stats.d \
 	src\gc\impl\manual\gc.d \
 	src\gc\impl\proto\gc.d \
 	\

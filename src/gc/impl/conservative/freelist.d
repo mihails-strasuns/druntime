@@ -1,50 +1,136 @@
+/**
+ * For allocating small objects GC interprets some of pages
+ * as free lists of bin-size chunks. This module provides
+ * a pool of such pages.
+ *
+ * Copyright: D Language Foundation 2018
+ * License:   $(HTTP www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
+ */
 module gc.impl.conservative.freelist;
 
 import gc.impl.conservative.pool;
 import gc.impl.conservative.debugging;
 import gc.gcassert;
 import gc.gcinterface : BlkInfo, BlkAttr;
+import gc.impl.conservative.stats;
 
 immutable uint[B_MAX] binsize = [ 16,32,64,128,256,512,1024,2048,4096 ];
 immutable size_t[B_MAX] notbinsize = [ ~(16-1),~(32-1),~(64-1),~(128-1),~(256-1),
                                 ~(512-1),~(1024-1),~(2048-1),~(4096-1) ];
+struct Buckets
+{
+    private FreeList[B_PAGE] lists;
+
+    /**
+     * Computes the bin table using CTFE.
+     */
+    private static byte[2049] ctfeBins()
+    {
+        byte[2049] ret;
+        size_t p = 0;
+        for (Bins b = B_16; b <= B_2048; b++)
+            for ( ; p <= binsize[b]; p++)
+                ret[p] = b;
+
+        return ret;
+    }
+
+    private static immutable byte[2049] binTable = ctfeBins();
+
+    nothrow:
+
+    FreeList opIndex(size_t idx) @nogc
+    {
+        return this.lists[idx];
+    }
+
+    void* alloc(size_t requested_size, ref size_t allocated_size,
+        scope SmallObjectPool* delegate() nothrow more_memory, uint bits)
+    {
+        auto bin = binTable[requested_size];
+        allocated_size = binsize[bin];
+
+        if (!lists[bin].head)
+        {
+            auto pool = more_memory();
+            gcassert(pool !is null);
+            lists[bin].initialize(pool, allocated_size, bin);
+        }
+
+        FreeNode* item = lists[bin].alloc();
+        auto pool = item.host;
+        gcassert(!pool.isLargeObject);
+
+        void* p = item;
+        if (bits)
+            pool.setBits((p - pool.baseAddr) >> pool.shiftBy, bits);
+        debug (MEMSTOMP) memset(p, 0xF0, alloc_size);
+
+        return p;
+    }
+}
 
 struct FreeList
 {
-    FreeList* next;
-    Pool* host;
+    FreeNode* head;
 
-    @disable this();
-
-    static FreeList* from(Pool* pool, void* page, size_t size) nothrow
+    void free(FreeNode* item) @nogc nothrow
     {
+        gcassert(item !is null);
+        gcassert(item.host !is null);
+
+        item.next = head;
+        head = item;
+    }
+
+    FreeNode* alloc() @nogc nothrow
+    {
+        gcassert(head !is null);
+        gcassert(head.host !is null);
+
+        auto p = head;
+        head = head.next;
+        return p;
+    }
+
+    /**
+     * Params:
+     *  pool = pointer to the pool which to allocate new page from
+     *  size = size of an individual bin
+     */
+    void initialize(SmallObjectPool* pool, size_t size, Bins bin) nothrow
+    {
+        gcassert(pool !is null);
+
+        void* page = pool.allocPage(bin);
+        gcassert(page !is null);
+
         void* p = page;
         void* p_end = page + PAGESIZE - size;
 
         for (; p < p_end; p += size)
         {
-            auto item = cast(FreeList*) p;
-            item.next = cast(FreeList*) (p + size);
+            auto item = cast(FreeNode*) p;
+            item.next = cast(FreeNode*) (p + size);
             item.host = pool;
         }
 
-        auto item = cast(FreeList*) p;
+        auto item = cast(FreeNode*) p;
         item.next = null;
         item.host = pool;
 
-        auto head = cast(FreeList*) page;
-        return head;
+        this.head = cast(FreeNode*) page;
     }
 
     struct Range
     {
-        FreeList* current;
+        FreeNode* current;
 
         nothrow @nogc:
 
-        this(FreeList* list)
+        this(FreeList list)
         {
-            current = list;
+            current = list.head;
         }
 
         bool empty()
@@ -57,7 +143,7 @@ struct FreeList
             current = current.next;
         }
 
-        FreeList* front()
+        FreeNode* front()
         {
             return current;
         }
@@ -65,23 +151,29 @@ struct FreeList
 
     Range range ( ) nothrow @nogc
     {
-        return Range(&this);
+        return Range(this);
     }
 }
 
-void add(ref FreeList* head, FreeList* item) @nogc nothrow
+/**
+ * Free list implementation for a small object pool.
+ * Wraps a pointer to the begging of an individual bin.
+ *
+ * This actual struct can be both list head and nodes depending on the
+ * context.
+ */
+struct FreeNode
 {
-    item.next = head;
-    head = item;
-}
+    /// Pointer to the next list node, `null` for tail node
+    FreeNode* next;
+    /// Pointer to the pool which allocated this list page
+    SmallObjectPool* host;
 
-FreeList* take(ref FreeList* head) @nogc nothrow
-{
-    auto p = head;
-    head = head.next;
-    return p;
+    /// See `from`
+    @disable this();
+    /// See `from`
+    @disable this(this);
 }
-
 
 private extern(C)
 {
@@ -176,24 +268,26 @@ struct SmallObjectPool
     }
 
     /**
-    * Allocate a page of bin's.
-    * Returns:
-    *           head of a single linked list of new entries
-    */
-    FreeList* allocPage(Bins bin) nothrow
+     * Allocate a single page.
+     *
+     * Returns:
+     *   pointer to the beginning of the page, null on failure
+     */
+    void* allocPage(Bins bin) nothrow
     {
         size_t pn;
         for (pn = searchStart; pn < npages; pn++)
+        {
             if (pagetable[pn] == B_FREE)
-                goto L1;
+            {
+                this.searchStart = pn + 1;
+                freepages--;
+                pagetable[pn] = cast(ubyte) bin;
+                ++usedSmallPages;
+                return baseAddr + pn * PAGESIZE;
+            }
+        }
 
         return null;
-
-    L1:
-        searchStart = pn + 1;
-        pagetable[pn] = cast(ubyte)bin;
-        freepages--;
-        size_t size = binsize[bin];
-        return FreeList.from(&base, baseAddr + pn * PAGESIZE, size);
     }
 }
